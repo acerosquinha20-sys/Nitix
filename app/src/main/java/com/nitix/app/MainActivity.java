@@ -3,6 +3,7 @@ package com.nitix.app;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -21,19 +22,25 @@ public class MainActivity extends android.app.Activity {
 
     static final int REQ_PHOTO = 21;
     static final int REQ_VIDEO = 22;
+    static final int REQ_AVATAR = 23;
 
     private static final int TAB_HOME = 0;
     private static final int TAB_PHOTO = 1;
     private static final int TAB_VIDEO = 2;
     private static final int TAB_VIP = 3;
-    private static final String[] TAB_NAMES = {"Início", "Foto", "Vídeo", "VIP"};
+    private static final int TAB_PROFILE = 4;
+    private static final String[] TAB_NAMES = {"Início", "Foto", "Vídeo", "VIP", "Perfil"};
 
     private FrameLayout content;
-    private final TextView[] tabs = new TextView[4];
+    private final TextView[] tabs = new TextView[5];
     private int current = -1;
 
     private PhotoScreen photo;
     private VideoScreen video;
+    private ProfileScreen profile;
+    private AvatarView homeAvatar;
+    private NameView homeName;
+    private TextView homeSub;
     private View home;
     private View vip;
     private TextView planText;
@@ -43,12 +50,21 @@ public class MainActivity extends android.app.Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (!Account.isLoggedIn(this)) {
+            startActivity(new Intent(this, AuthActivity.class));
+            finish();
+            return;
+        }
         getWindow().setStatusBarColor(Ui.BG);
         getWindow().setNavigationBarColor(Ui.CARD);
-        setContentView(buildRoot());
+
+        FrameLayout frame = new FrameLayout(this);
+        frame.addView(buildRoot(), new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
+        setContentView(frame);
 
         photo = new PhotoScreen(this);
         video = new VideoScreen(this);
+        profile = new ProfileScreen(this);
         home = buildHome();
         vip = buildVip();
         showTab(TAB_HOME);
@@ -56,6 +72,14 @@ public class MainActivity extends android.app.Activity {
         if (Build.VERSION.SDK_INT < 29
                 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 7);
+        }
+
+        // "Seja bem-vindo" com animação logo depois do login ou do cadastro
+        if (b == null && getIntent().getBooleanExtra("welcome", false)) {
+            getIntent().removeExtra("welcome");
+            frame.addView(new WelcomeView(this, Account.name(this), Account.border(this),
+                            Account.nameStyle(this), Account.loadAvatar(this), Account.initial(this)),
+                    new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
         }
     }
 
@@ -73,7 +97,7 @@ public class MainActivity extends android.app.Activity {
         nav.setPadding(Ui.dp(this, 8), Ui.dp(this, 6), Ui.dp(this, 8), Ui.dp(this, 14));
         for (int i = 0; i < TAB_NAMES.length; i++) {
             final int idx = i;
-            TextView t = Ui.text(this, TAB_NAMES[i], 14, Ui.MUTED, true);
+            TextView t = Ui.text(this, TAB_NAMES[i], 13, Ui.MUTED, true);
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
             t.setOnClickListener(v -> showTab(idx));
@@ -88,15 +112,18 @@ public class MainActivity extends android.app.Activity {
     void showTab(int i) {
         if (i == current) return;
         if (current == TAB_VIDEO && video != null) video.onHide();
+        if (current == TAB_PROFILE) Ui.hideKeyboard(this);
         current = i;
 
         content.removeAllViews();
         View page = i == TAB_HOME ? home
                 : i == TAB_PHOTO ? photo.root
                 : i == TAB_VIDEO ? video.root
+                : i == TAB_PROFILE ? profile.root
                 : vip;
         if (i == TAB_VIP) refreshVip();
         if (i == TAB_HOME) refreshPlan();
+        if (i == TAB_PROFILE) profile.refresh();
         content.addView(page, new FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH));
         Ui.enter(page, 0);
 
@@ -131,9 +158,30 @@ public class MainActivity extends android.app.Activity {
         head.addView(names, np);
         col.addView(head, Ui.lp(this, Ui.MATCH, Ui.WRAP, 0));
 
+        LinearLayout me = new LinearLayout(this);
+        me.setGravity(Gravity.CENTER_VERTICAL);
+        me.setBackground(Ui.outlined(this, Ui.CARD, 0x335B3DF0, 22));
+        me.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 14), Ui.dp(this, 10));
+        homeAvatar = new AvatarView(this);
+        me.addView(homeAvatar, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 64)));
+        LinearLayout meText = new LinearLayout(this);
+        meText.setOrientation(LinearLayout.VERTICAL);
+        homeSub = Ui.text(this, "", 12, Ui.MUTED, false);
+        meText.addView(homeSub);
+        homeName = new NameView(this, 20);
+        meText.addView(homeName);
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(0, Ui.WRAP, 1f);
+        mp.leftMargin = Ui.dp(this, 6);
+        me.addView(meText, mp);
+        me.addView(Ui.text(this, "Editar", 13, Ui.SUN, true));
+        me.setOnClickListener(v -> showTab(TAB_PROFILE));
+        Ui.pressable(me);
+        col.addView(me, Ui.lp(this, Ui.MATCH, Ui.WRAP, 20));
+        refreshProfile();
+
         Button bp = Ui.primary(this, "Melhorar uma foto");
         bp.setOnClickListener(v -> showTab(TAB_PHOTO));
-        col.addView(bp, Ui.lp(this, Ui.MATCH, Ui.dp(this, 64), 26));
+        col.addView(bp, Ui.lp(this, Ui.MATCH, Ui.dp(this, 64), 18));
 
         Button bv = Ui.secondary(this, "Melhorar um vídeo");
         bv.setOnClickListener(v -> showTab(TAB_VIDEO));
@@ -148,7 +196,8 @@ public class MainActivity extends android.app.Activity {
         card.setPadding(Ui.dp(this, 18), Ui.dp(this, 16), Ui.dp(this, 18), Ui.dp(this, 16));
         card.addView(Ui.text(this, "O que o Nitix faz", 17, Ui.TXT, true));
         String[] items = {
-                "Melhoria automática de luz e cor",
+                "Melhoria automática inteligente: luz, cor, sombras e nitidez",
+                "Conta com perfil animado, só seu",
                 "Nitidez, brilho, contraste e cor",
                 "Aumento de resolução em 2x e 4x",
                 "Foto em preto e branco",
@@ -162,6 +211,18 @@ public class MainActivity extends android.app.Activity {
         }
         col.addView(card, Ui.lp(this, Ui.MATCH, Ui.WRAP, 22));
         return sv;
+    }
+
+    /** Atualiza o cartão de perfil do Início (nome, foto e estilos). */
+    void refreshProfile() {
+        if (homeAvatar == null) return;
+        Bitmap bmp = Account.loadAvatar(this);
+        homeAvatar.setStyle(Account.border(this));
+        homeAvatar.setPhoto(bmp);
+        homeAvatar.setInitial(Account.initial(this));
+        homeName.setStyle(Account.nameStyle(this));
+        homeName.setNameText(Account.name(this));
+        homeSub.setText("Olá,");
     }
 
     private void refreshPlan() {
@@ -257,6 +318,7 @@ public class MainActivity extends android.app.Activity {
         Uri u = data.getData();
         if (req == REQ_PHOTO) photo.onPicked(u);
         else if (req == REQ_VIDEO) video.onPicked(u);
+        else if (req == REQ_AVATAR) profile.onPicked(u);
     }
 
     void toast(String s) {

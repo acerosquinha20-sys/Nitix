@@ -25,7 +25,7 @@ final class PhotoScreen {
     private final TextView bwChip;
     private final TextView[] scaleChips = new TextView[3];
     private final TextView saveBtn;
-    private final SeekBar sBright, sContrast, sSat, sSharp;
+    private final SeekBar sBright, sContrast, sSat, sSharp, sAuto;
 
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -87,7 +87,12 @@ final class PhotoScreen {
         row1.setGravity(Gravity.CENTER_VERTICAL);
         android.widget.Button auto = Ui.primary(a, "Melhorar automático");
         auto.setOnClickListener(v -> {
+            if (preview == null) {
+                act.toast("Escolha uma foto primeiro.");
+                return;
+            }
             p.auto = true;
+            hint.setText("Melhoria automática aplicada. Ajuste a intensidade abaixo.");
             updatePreview();
         });
         row1.addView(auto, new LinearLayout.LayoutParams(0, Ui.dp(a, 52), 1f));
@@ -97,6 +102,11 @@ final class PhotoScreen {
         zp.leftMargin = Ui.dp(a, 10);
         row1.addView(zero, zp);
         col.addView(row1, Ui.lp(a, Ui.MATCH, Ui.WRAP, 20));
+
+        sAuto = Ui.slider(a, col, "Intensidade da melhoria automática", 0f, 1f, 1f, 100f, v -> {
+            p.autoStrength = v;
+            if (p.auto) schedule();
+        });
 
         LinearLayout row2 = new LinearLayout(a);
         row2.setGravity(Gravity.CENTER_VERTICAL);
@@ -176,6 +186,7 @@ final class PhotoScreen {
         setSlider(sContrast, -1f, 1f, 0f);
         setSlider(sSat, 0f, 2f, 1f);
         setSlider(sSharp, 0f, 1f, 0f);
+        setSlider(sAuto, 0f, 1f, 1f);
         styleChip(bwChip, false);
         chooseScale(0);
         updatePreview();
@@ -220,6 +231,7 @@ final class PhotoScreen {
         saveBtn.setText("Salvando...");
         final PhotoEngine.Params snap = p.copy();
         final int sc = scale;
+        snap.scale = sc;
         final boolean wm = Store.watermark(act);
         bg.execute(() -> {
             try {

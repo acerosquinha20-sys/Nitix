@@ -37,6 +37,9 @@ final class VideoScreen {
     private Uri source;
     private File result;
     private int height = 720;
+    private long durationMs;
+    private boolean autoOn = true;
+    private TextView autoChip;
     private float brightness;
     private float contrast;
     private float saturation = 1f;
@@ -71,6 +74,18 @@ final class VideoScreen {
         Ui.slider(a, col, "Brilho", -1f, 1f, 0f, 100f, v -> brightness = v);
         Ui.slider(a, col, "Contraste", -1f, 1f, 0f, 100f, v -> contrast = v);
         Ui.slider(a, col, "Cor (saturação)", 0f, 2f, 1f, 100f, v -> saturation = v);
+
+        autoChip = chip("Melhoria automática: LIGADA");
+        autoChip.setPadding(Ui.dp(a, 10), Ui.dp(a, 14), Ui.dp(a, 10), Ui.dp(a, 14));
+        styleChip(autoChip, true);
+        autoChip.setOnClickListener(v -> {
+            autoOn = !autoOn;
+            autoChip.setText(autoOn ? "Melhoria automática: LIGADA" : "Melhoria automática: desligada");
+            styleChip(autoChip, autoOn);
+        });
+        col.addView(autoChip, Ui.lp(a, Ui.MATCH, Ui.WRAP, 18));
+        col.addView(Ui.text(a, "Analisa o vídeo e ajusta luz, cor e equilíbrio de branco sozinho.", 12, Ui.MUTED, false),
+                Ui.lp(a, Ui.WRAP, Ui.WRAP, 6));
 
         col.addView(Ui.text(a, "Resolução", 14, Ui.TXT, true), Ui.lp(a, Ui.WRAP, Ui.WRAP, 18));
         LinearLayout resRow = new LinearLayout(a);
@@ -136,6 +151,7 @@ final class VideoScreen {
             return;
         }
         source = u;
+        durationMs = ms;
         result = null;
         output.setVisibility(android.view.View.GONE);
         saveBtn.setVisibility(android.view.View.GONE);
@@ -187,7 +203,23 @@ final class VideoScreen {
         bar.setProgress(0);
         bar.setVisibility(android.view.View.VISIBLE);
         status.setText("Melhorando o vídeo... não feche o app.");
-        engine.start(source, brightness, contrast, saturation, height, Store.watermark(act),
+        if (autoOn) {
+            status.setText("Analisando o vídeo...");
+            final Uri src = source;
+            final long dur = durationMs;
+            bg.execute(() -> {
+                final int[][] curves = VideoAnalyzer.analyze(act, src, dur, 0.9f);
+                main.post(() -> export(curves));
+            });
+        } else {
+            export(null);
+        }
+    }
+
+    private void export(int[][] curves) {
+        status.setText("Melhorando o vídeo... não feche o app.");
+        float sat = saturation + (curves != null ? 0.10f : 0f);
+        engine.start(source, brightness, contrast, sat, height, Store.watermark(act), curves,
                 new VideoEngine.Callback() {
                     @Override
                     public void onProgress(int percent) {

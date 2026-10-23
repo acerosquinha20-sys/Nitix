@@ -1,5 +1,6 @@
 package com.nitix.app;
 
+import android.animation.ValueAnimator;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.ColorStateList;
@@ -11,6 +12,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -108,6 +112,39 @@ final class Ui {
         b.setBackground(outlined(c, CARD, VIOLET, 18));
         pressable(b);
         return b;
+    }
+
+
+    /** Animação em loop (0 a 1) para bordas e nomes animados. */
+    static ValueAnimator loop(long ms, final Setter setter) {
+        ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(ms);
+        a.setRepeatCount(ValueAnimator.INFINITE);
+        a.setInterpolator(new LinearInterpolator());
+        a.addUpdateListener(an -> setter.set((Float) an.getAnimatedValue()));
+        return a;
+    }
+
+    /** Campo de texto no estilo do Nitix. */
+    static EditText field(Context c, String hint, int inputType) {
+        EditText e = new EditText(c);
+        e.setHint(hint);
+        e.setHintTextColor(MUTED);
+        e.setTextColor(TXT);
+        e.setTextSize(16);
+        e.setInputType(inputType);
+        e.setSingleLine(true);
+        e.setPadding(dp(c, 16), dp(c, 14), dp(c, 16), dp(c, 14));
+        e.setBackground(outlined(c, CARD, VIOLET, 16));
+        return e;
+    }
+
+    static void hideKeyboard(android.app.Activity a) {
+        View v = a.getCurrentFocus();
+        if (v == null) return;
+        InputMethodManager m = (InputMethodManager) a.getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (m != null) m.hideSoftInputFromWindow(v.getWindowToken(), 0);
+        v.clearFocus();
     }
 
     /** Encolhe um pouco ao tocar, como um botão de verdade. */

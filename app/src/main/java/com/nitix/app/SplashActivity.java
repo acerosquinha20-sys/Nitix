@@ -85,7 +85,8 @@ public class SplashActivity extends android.app.Activity {
     private void goMain() {
         if (went) return;
         went = true;
-        startActivity(new Intent(this, MainActivity.class));
+        Class<?> next = Account.isLoggedIn(this) ? MainActivity.class : AuthActivity.class;
+        startActivity(new Intent(this, next));
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
         finish();
     }
