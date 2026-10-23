@@ -1,5 +1,6 @@
 package com.nitix.app;
 
+import android.graphics.Bitmap;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Handler;
@@ -40,6 +41,11 @@ final class VideoScreen {
     private long durationMs;
     private boolean autoOn = true;
     private TextView autoChip;
+    private CompareView compare;
+    private Bitmap frame;
+    private int[][] curves;
+    private int previewVersion;
+    private final Runnable previewTask = this::updateVideoPreview;
     private float brightness;
     private float contrast;
     private float saturation = 1f;
@@ -71,9 +77,25 @@ final class VideoScreen {
         info = Ui.text(a, "Nenhum vídeo escolhido.", 13, Ui.MUTED, false);
         col.addView(info, Ui.lp(a, Ui.WRAP, Ui.WRAP, 6));
 
-        Ui.slider(a, col, "Brilho", -1f, 1f, 0f, 100f, v -> brightness = v);
-        Ui.slider(a, col, "Contraste", -1f, 1f, 0f, 100f, v -> contrast = v);
-        Ui.slider(a, col, "Cor (saturação)", 0f, 2f, 1f, 100f, v -> saturation = v);
+        col.addView(Ui.text(a, "Prévia do efeito (arraste a barra)", 13, Ui.LILAC, true), Ui.lp(a, Ui.WRAP, Ui.WRAP, 16));
+        compare = new CompareView(a);
+        compare.setBackground(Ui.outlined(a, Ui.CARD, 0x335B3DF0, 22));
+        col.addView(compare, Ui.lp(a, Ui.MATCH, Ui.dp(a, 220), 6));
+        col.addView(Ui.text(a, "É um quadro do vídeo com o efeito aplicado. O resultado final pode variar um pouco.", 12, Ui.MUTED, false),
+                Ui.lp(a, Ui.WRAP, Ui.WRAP, 6));
+
+        Ui.slider(a, col, "Brilho", -1f, 1f, 0f, 100f, v -> {
+            brightness = v;
+            scheduleVideoPreview();
+        });
+        Ui.slider(a, col, "Contraste", -1f, 1f, 0f, 100f, v -> {
+            contrast = v;
+            scheduleVideoPreview();
+        });
+        Ui.slider(a, col, "Cor (saturação)", 0f, 2f, 1f, 100f, v -> {
+            saturation = v;
+            scheduleVideoPreview();
+        });
 
         autoChip = chip("Melhoria automática: LIGADA");
         autoChip.setPadding(Ui.dp(a, 10), Ui.dp(a, 14), Ui.dp(a, 10), Ui.dp(a, 14));
@@ -82,6 +104,7 @@ final class VideoScreen {
             autoOn = !autoOn;
             autoChip.setText(autoOn ? "Melhoria automática: LIGADA" : "Melhoria automática: desligada");
             styleChip(autoChip, autoOn);
+            scheduleVideoPreview();
         });
         col.addView(autoChip, Ui.lp(a, Ui.MATCH, Ui.WRAP, 18));
         col.addView(Ui.text(a, "Analisa o vídeo e ajusta luz, cor e equilíbrio de branco sozinho.", 12, Ui.MUTED, false),
@@ -159,6 +182,7 @@ final class VideoScreen {
         input.start();
         info.setText("Duração: " + Math.round(ms / 1000f) + " s  •  Altura original: " + h + " px");
         status.setText("");
+        loadFrame(u, ms);
     }
 
     private static long parseLong(String s) {
@@ -192,6 +216,71 @@ final class VideoScreen {
         t.setBackground(on ? Ui.box(act, Ui.SUN, 14) : Ui.outlined(act, Ui.CARD, Ui.VIOLET, 14));
     }
 
+    // ------------------------------------------------------------------ prévia do efeito
+    /** Pega um quadro do meio do vídeo e já analisa as cores, para mostrar a prévia e acelerar a exportação. */
+    private void loadFrame(final Uri u, final long ms) {
+        frame = null;
+        curves = null;
+        bg.execute(() -> {
+            Bitmap f = null;
+            MediaMetadataRetriever m = new MediaMetadataRetriever();
+            try {
+                m.setDataSource(act, u);
+                Bitmap raw = m.getFrameAtTime(Math.max(1L, ms / 2) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                if (raw != null) {
+                    float sc = Math.min(1f, 720f / Math.max(raw.getWidth(), raw.getHeight()));
+                    f = sc < 1f
+                            ? Bitmap.createScaledBitmap(raw, Math.round(raw.getWidth() * sc), Math.round(raw.getHeight() * sc), true)
+                            : raw;
+                }
+            } catch (Exception ignored) {
+            } finally {
+                try {
+                    m.release();
+                } catch (Exception ignored) {
+                }
+            }
+            final Bitmap ff = f;
+            final int[][] cv = VideoAnalyzer.analyze(act, u, ms, 0.9f);
+            main.post(() -> {
+                if (source != u) return;
+                frame = ff;
+                curves = cv;
+                if (ff != null) {
+                    compare.setBefore(ff);
+                    compare.setAfter(ff);
+                }
+                updateVideoPreview();
+            });
+        });
+    }
+
+    private void scheduleVideoPreview() {
+        main.removeCallbacks(previewTask);
+        main.postDelayed(previewTask, 120);
+    }
+
+    private void updateVideoPreview() {
+        final Bitmap f = frame;
+        if (f == null) return;
+        final int v = ++previewVersion;
+        final int[][] cv = autoOn ? curves : null;
+        final float b = brightness;
+        final float c = contrast;
+        final float s = saturation + (cv != null ? 0.10f : 0f);
+        bg.execute(() -> {
+            Bitmap a = PhotoEngine.applyCurves(f, cv);
+            PhotoEngine.Params q = new PhotoEngine.Params();
+            q.brightness = b;
+            q.contrast = c;
+            q.saturation = s;
+            final Bitmap out = PhotoEngine.enhance(a, q);
+            main.post(() -> {
+                if (v == previewVersion) compare.setAfter(out);
+            });
+        });
+    }
+
     // ------------------------------------------------------------------ gerar
     private void generate() {
         if (source == null) {
@@ -203,7 +292,9 @@ final class VideoScreen {
         bar.setProgress(0);
         bar.setVisibility(android.view.View.VISIBLE);
         status.setText("Melhorando o vídeo... não feche o app.");
-        if (autoOn) {
+        if (autoOn && curves != null) {
+            export(curves);
+        } else if (autoOn) {
             status.setText("Analisando o vídeo...");
             final Uri src = source;
             final long dur = durationMs;

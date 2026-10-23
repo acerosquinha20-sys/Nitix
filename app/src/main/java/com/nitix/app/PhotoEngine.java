@@ -26,6 +26,18 @@ final class PhotoEngine {
         boolean auto;
         float autoStrength = 1f; // 0 .. 1 (intensidade da melhoria automática)
         int scale = 1;           // fator de resolução (1, 2 ou 4), usado para calibrar a nitidez
+        int filter;              // 0 = original, 1.. = filtros prontos
+        int rotation;            // quartos de volta (0..3)
+        boolean flip;            // espelhar
+        int crop;                // 0 original, 1 = 1:1, 2 = 4:5, 3 = 16:9, 4 = 9:16
+        float vignette;          // 0 .. 1
+        float edgeBlur;          // 0 .. 1 (desfoque nas bordas, foco no centro)
+        float denoise;           // 0 .. 1
+        String text = "";
+        int textPos = 2;         // 0 topo, 1 centro, 2 base
+        int textColor;           // índice em TEXT_COLORS
+        String sticker = "";
+        int stickerPos = 1;      // 0 sup. esq., 1 sup. dir., 2 centro, 3 inf. esq., 4 inf. dir.
 
         Params copy() {
             Params q = new Params();
@@ -37,6 +49,18 @@ final class PhotoEngine {
             q.auto = auto;
             q.autoStrength = autoStrength;
             q.scale = scale;
+            q.filter = filter;
+            q.rotation = rotation;
+            q.flip = flip;
+            q.crop = crop;
+            q.vignette = vignette;
+            q.edgeBlur = edgeBlur;
+            q.denoise = denoise;
+            q.text = text;
+            q.textPos = textPos;
+            q.textColor = textColor;
+            q.sticker = sticker;
+            q.stickerPos = stickerPos;
             return q;
         }
     }
@@ -109,6 +133,7 @@ final class PhotoEngine {
         src.getPixels(px, 0, w, 0, 0, w, h);
 
         float s = p.auto ? Math.max(0f, Math.min(1f, p.autoStrength)) : 0f;
+        if (p.denoise > 0f) denoise(px, w, h, p.denoise);
         if (s > 0f) autoTone(px, w, h, p.bw, s);
 
         float cf = 1f + p.contrast;
@@ -150,12 +175,243 @@ final class PhotoEngine {
             }
         }
 
+        if (p.filter > 0 && !p.bw) applyFilter(px, p.filter);
+        if (p.vignette > 0f || p.edgeBlur > 0f) radial(px, w, h, p.vignette, p.edgeBlur);
+
         // nitidez: a do usuário ou a automática (maior quando a foto foi ampliada)
         float autoSharp = s > 0f ? (0.25f + 0.10f * (Math.max(1, p.scale) - 1)) * s : 0f;
         float sharp = Math.max(p.sharpness, autoSharp);
         if (sharp > 0f) sharpen(px, w, h, sharp);
 
+        return decorate(Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888), p);
+    }
+
+    // ------------------------------------------------------------------ girar, cortar, curvas
+
+    /** Gira, espelha e corta (do centro) conforme os parâmetros. */
+    static Bitmap geometry(Bitmap src, Params p) {
+        Bitmap b = src;
+        int turns = ((p.rotation % 4) + 4) % 4;
+        if (turns != 0 || p.flip) {
+            Matrix m = new Matrix();
+            if (p.flip) m.postScale(-1f, 1f);
+            m.postRotate(90f * turns);
+            b = Bitmap.createBitmap(src, 0, 0, src.getWidth(), src.getHeight(), m, true);
+        }
+        if (p.crop > 0) {
+            float ratio = p.crop == 1 ? 1f : p.crop == 2 ? 4f / 5f : p.crop == 3 ? 16f / 9f : 9f / 16f;
+            int w = b.getWidth(), h = b.getHeight();
+            int cw = w, ch = h;
+            if ((float) w / h > ratio) cw = Math.round(h * ratio);
+            else ch = Math.round(w / ratio);
+            cw = Math.max(1, Math.min(w, cw));
+            ch = Math.max(1, Math.min(h, ch));
+            if (cw != w || ch != h) b = Bitmap.createBitmap(b, (w - cw) / 2, (h - ch) / 2, cw, ch);
+        }
+        return b;
+    }
+
+    /** Aplica curvas por canal (as mesmas do vídeo) a uma imagem. */
+    static Bitmap applyCurves(Bitmap src, int[][] cv) {
+        if (cv == null) return src;
+        int w = src.getWidth(), h = src.getHeight();
+        int[] px = new int[w * h];
+        src.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            px[i] = (c & 0xFF000000) | (cv[0][(c >> 16) & 255] << 16) | (cv[1][(c >> 8) & 255] << 8) | cv[2][c & 255];
+        }
         return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+    }
+
+    // ------------------------------------------------------------------ filtros
+
+    static final String[] FILTERS = {"Original", "Cinema", "Vintage", "Vívido", "Quente", "Frio", "Drama", "Suave"};
+
+    // contraste, saturação, clareamento dos pretos, multiplicador R/G/B, tom nas sombras R/G/B, tom nas luzes R/G/B
+    private static final float[][] FILTER_TABLE = {
+            {},
+            {1.10f, 0.90f, 4f, 1f, 1f, 1f, -10f, 0f, 14f, 16f, 4f, -14f},
+            {0.92f, 0.78f, 24f, 1.04f, 1f, 0.92f, 6f, 4f, 0f, 12f, 6f, -8f},
+            {1.12f, 1.40f, 0f, 1f, 1f, 1f, 0f, 0f, 0f, 0f, 0f, 0f},
+            {1.04f, 1.05f, 0f, 1.08f, 1f, 0.90f, 6f, 0f, 0f, 10f, 4f, -8f},
+            {1.04f, 1.00f, 0f, 0.92f, 0.99f, 1.10f, -4f, 0f, 10f, -6f, 0f, 8f},
+            {1.28f, 0.82f, 0f, 1f, 1f, 1f, -8f, -8f, -4f, 6f, 6f, 6f},
+            {0.88f, 0.95f, 18f, 1.02f, 1.02f, 1.02f, 8f, 6f, 10f, 0f, 0f, 0f},
+    };
+
+    private static void applyFilter(int[] px, int f) {
+        if (f <= 0 || f >= FILTER_TABLE.length) return;
+        float[] t = FILTER_TABLE[f];
+        float k = (255f - t[2]) / 255f;
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            float r = (c >> 16) & 255;
+            float g = (c >> 8) & 255;
+            float b = c & 255;
+            float lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255f;
+            float sh = (1f - lum) * (1f - lum);
+            float hi = lum * lum;
+            r += t[6] * sh + t[9] * hi;
+            g += t[7] * sh + t[10] * hi;
+            b += t[8] * sh + t[11] * hi;
+            r *= t[3];
+            g *= t[4];
+            b *= t[5];
+            r = (r - 128f) * t[0] + 128f;
+            g = (g - 128f) * t[0] + 128f;
+            b = (b - 128f) * t[0] + 128f;
+            float gray = 0.299f * r + 0.587f * g + 0.114f * b;
+            r = gray + (r - gray) * t[1];
+            g = gray + (g - gray) * t[1];
+            b = gray + (b - gray) * t[1];
+            r = t[2] + r * k;
+            g = t[2] + g * k;
+            b = t[2] + b * k;
+            px[i] = (c & 0xFF000000) | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b);
+        }
+    }
+
+    // ------------------------------------------------------------------ vinheta, foco no centro, ruído
+
+    /** Escurece as bordas (vinheta) e/ou borra as bordas deixando o centro nítido. */
+    private static void radial(int[] px, int w, int h, float vig, float edge) {
+        int[] blur = null;
+        if (edge > 0f) {
+            Bitmap cur = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+            int cw = w, ch = h;
+            while (cw > Math.max(2, w / 14)) {
+                cw = Math.max(1, cw / 2);
+                ch = Math.max(1, ch / 2);
+                Bitmap next = Bitmap.createScaledBitmap(cur, cw, ch, true);
+                cur.recycle();
+                cur = next;
+            }
+            Bitmap up = Bitmap.createScaledBitmap(cur, w, h, true);
+            blur = new int[w * h];
+            up.getPixels(blur, 0, w, 0, 0, w, h);
+            cur.recycle();
+            up.recycle();
+        }
+        float cx = w / 2f, cy = h / 2f;
+        for (int y = 0; y < h; y++) {
+            float dy = (y - cy) / cy;
+            for (int x = 0; x < w; x++) {
+                float dx = (x - cx) / cx;
+                float d = (float) Math.sqrt(dx * dx + dy * dy) / 1.4142f;
+                int i = y * w + x;
+                int c = px[i];
+                float r = (c >> 16) & 255;
+                float g = (c >> 8) & 255;
+                float b = c & 255;
+                if (blur != null) {
+                    float m = smooth((d - 0.28f) / 0.5f) * edge;
+                    int q = blur[i];
+                    r += (((q >> 16) & 255) - r) * m;
+                    g += (((q >> 8) & 255) - g) * m;
+                    b += ((q & 255) - b) * m;
+                }
+                if (vig > 0f) {
+                    float f = 1f - vig * 0.7f * smooth((d - 0.35f) / 0.65f);
+                    r *= f;
+                    g *= f;
+                    b *= f;
+                }
+                px[i] = (c & 0xFF000000) | (clamp(r) << 16) | (clamp(g) << 8) | clamp(b);
+            }
+        }
+    }
+
+    private static float smooth(float t) {
+        t = clampF(t, 0f, 1f);
+        return t * t * (3f - 2f * t);
+    }
+
+    /** Reduz o ruído só onde a diferença para os vizinhos é pequena, para não borrar os detalhes. */
+    private static void denoise(int[] px, int w, int h, float amount) {
+        int n = px.length;
+        byte[] src = new byte[n];
+        byte[] blur = new byte[n];
+        int radius = Math.max(1, Math.round(Math.max(w, h) / 900f));
+        for (int ch = 0; ch < 3; ch++) {
+            int shift = 16 - 8 * ch;
+            for (int i = 0; i < n; i++) src[i] = (byte) (px[i] >> shift);
+            boxBlur(src, blur, w, h, radius);
+            for (int i = 0; i < n; i++) {
+                int v = src[i] & 255;
+                int bl = blur[i] & 255;
+                float wgt = amount * Math.max(0f, 1f - Math.abs(v - bl) / 28f);
+                int nv = Math.round(v + (bl - v) * wgt);
+                px[i] = (px[i] & ~(255 << shift)) | (nv << shift);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ texto e adesivo
+
+    static final int[] TEXT_COLORS = {0xFFFFFFFF, 0xFFFFD166, 0xFF7DF0FF, 0xFFFF5CD6, 0xFF000000};
+
+    /** Escreve o texto e o adesivo (emoji) na foto. Tamanhos relativos, iguais na prévia e no arquivo final. */
+    static Bitmap decorate(Bitmap src, Params p) {
+        boolean hasText = p.text != null && !p.text.trim().isEmpty();
+        boolean hasSticker = p.sticker != null && !p.sticker.isEmpty();
+        if (!hasText && !hasSticker) return src;
+
+        Bitmap out = src.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas cv = new Canvas(out);
+        int w = out.getWidth(), h = out.getHeight();
+        float base = Math.min(w, h);
+
+        if (hasSticker) {
+            Paint sp = new Paint(Paint.ANTI_ALIAS_FLAG);
+            sp.setTextSize(base * 0.24f);
+            sp.setTextAlign(Paint.Align.CENTER);
+            float m = base * 0.04f;
+            float half = base * 0.12f;
+            float cx = w / 2f, cy = h / 2f;
+            switch (p.stickerPos) {
+                case 0:
+                    cx = m + half;
+                    cy = m + half;
+                    break;
+                case 1:
+                    cx = w - m - half;
+                    cy = m + half;
+                    break;
+                case 3:
+                    cx = m + half;
+                    cy = h - m - half;
+                    break;
+                case 4:
+                    cx = w - m - half;
+                    cy = h - m - half;
+                    break;
+                default:
+                    break;
+            }
+            cv.drawText(p.sticker, cx, cy - (sp.ascent() + sp.descent()) / 2f, sp);
+        }
+
+        if (hasText) {
+            String t = p.text.trim();
+            Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+            tp.setTypeface(Typeface.DEFAULT_BOLD);
+            tp.setTextAlign(Paint.Align.CENTER);
+            tp.setColor(TEXT_COLORS[Math.max(0, Math.min(TEXT_COLORS.length - 1, p.textColor))]);
+            float size = base * 0.09f;
+            tp.setTextSize(size);
+            while (tp.measureText(t) > w * 0.9f && size > base * 0.03f) {
+                size *= 0.92f;
+                tp.setTextSize(size);
+            }
+            tp.setShadowLayer(size * 0.10f, 0f, size * 0.04f, 0xCC000000);
+            float y;
+            if (p.textPos == 0) y = size * 1.6f;
+            else if (p.textPos == 1) y = h / 2f - (tp.ascent() + tp.descent()) / 2f;
+            else y = h - base * 0.10f;
+            cv.drawText(t, w / 2f, y, tp);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ melhoria automática

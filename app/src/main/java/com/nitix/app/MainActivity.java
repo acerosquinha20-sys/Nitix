@@ -197,6 +197,9 @@ public class MainActivity extends android.app.Activity {
         card.addView(Ui.text(this, "O que o Nitix faz", 17, Ui.TXT, true));
         String[] items = {
                 "Melhoria automática inteligente: luz, cor, sombras e nitidez",
+                "Filtros, girar, cortar, texto e adesivos",
+                "Foco no centro, vinheta e redução de ruído",
+                "Compartilhar direto depois de salvar",
                 "Conta com perfil animado, só seu",
                 "Nitidez, brilho, contraste e cor",
                 "Aumento de resolução em 2x e 4x",
